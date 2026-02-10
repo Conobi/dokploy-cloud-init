@@ -1,0 +1,14 @@
+# Environment secrets (contain Tailscale auth keys)
+secrets/*.env
+
+# Generated cloud-init files (contain embedded secrets)
+cloud-init-*.yaml
+
+# Keep the template
+!cloud-init.template.yaml
+
+# Test artifacts
+.cloud-init-test-*.yaml
+
+# Deploy artifacts
+.cloud-init-deploy-*.yaml

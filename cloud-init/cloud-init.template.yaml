@@ -9,7 +9,7 @@
 # ── System ──────────────────────────────────────────────
 timezone: Europe/Paris
 locale: en_US.UTF-8
-hostname: dokploy-${ENVIRONMENT}
+hostname: ${VM_HOSTNAME}
 
 package_update: true
 package_upgrade: true
@@ -399,7 +399,7 @@ runcmd:
   - log "Installing Tailscale"
   - curl -fsSL https://tailscale.com/install.sh | sh
   - log "Tailscale installed, connecting to tailnet..."
-  - tailscale up --auth-key=${TAILSCALE_AUTH_KEY} --hostname=dokploy-${ENVIRONMENT} --accept-routes --timeout=30s
+  - tailscale up --auth-key=${TAILSCALE_AUTH_KEY} --hostname=${VM_HOSTNAME} --accept-routes --timeout=30s
   - 'log "Tailscale connected, IP: $(tailscale ip -4)"'
 
   # --- 7. UFW firewall (Tailscale-only for SSH + Dokploy) ---
@@ -431,6 +431,6 @@ runcmd:
   - log "Installation complete"
 
 final_message: |
-  Cloud-init finished for dokploy-${ENVIRONMENT}.
+  Cloud-init finished for ${VM_HOSTNAME}.
   Access Dokploy UI via Tailscale: http://<TAILSCALE_IP>:3000
   Logs: /var/log/dokploy-install.log

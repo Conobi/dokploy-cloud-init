@@ -226,31 +226,10 @@ if [[ $local_attempt -lt $local_max ]]; then
 fi
 sleep 30
 
-# ── Step 7: Wait for SSH on Public IP ────────────────────────────────────────
-# After reboot, SSH on the public IP is always available BEFORE cloud-init
-# enables UFW (step 7 in cloud-init). We use this window to monitor progress
-# and, in Tailscale mode, discover the Tailscale IP from the VM itself.
-
-step "Waiting for SSH to come back on ${AZURE_HOST}..."
-
-ssh_attempts=0
-ssh_max=60
-
-while ! ssh_cmd true 2>/dev/null; do
-    sleep 2
-    ssh_attempts=$((ssh_attempts + 1))
-    if [[ $ssh_attempts -ge $ssh_max ]]; then
-        error "SSH not available after $((ssh_max * 2))s"
-        echo "  The VM may still be booting. Try connecting manually:" >&2
-        echo "    ssh ${SSH_USER}@${AZURE_HOST}" >&2
-        exit 1
-    fi
-    if [[ $((ssh_attempts % 10)) -eq 0 ]]; then
-        echo "  Still waiting for SSH... ($((ssh_attempts * 2))s)" >&2
-    fi
-done
-
-info "SSH available on ${AZURE_HOST}"
+# ── Step 7: Reconnect via SSH ────────────────────────────────────────────────
+# After reboot, try the public IP first. In Tailscale mode, UFW from a
+# previous deploy may already block the public IP — if so, discover the
+# Tailscale peer and switch to it.
 
 # SSH_TARGET tracks which IP we're connecting to — starts as public IP,
 # switches to Tailscale IP once discovered.
@@ -261,6 +240,101 @@ TAILSCALE_IP=""
 run_ssh() {
     ssh $SSH_OPTS "${SSH_USER}@${SSH_TARGET}" "$@"
 }
+
+step "Waiting for SSH to come back on ${AZURE_HOST}..."
+
+ssh_attempts=0
+# Shorter timeout when Tailscale is active — UFW may already block the public IP
+if [[ "$SKIP_TAILSCALE" == "true" ]]; then
+    ssh_max=60  # 120s
+else
+    ssh_max=15  # 30s, then fall back to Tailscale
+fi
+
+while ! ssh_cmd true 2>/dev/null; do
+    sleep 2
+    ssh_attempts=$((ssh_attempts + 1))
+    if [[ $ssh_attempts -ge $ssh_max ]]; then
+        break
+    fi
+    if [[ $((ssh_attempts % 10)) -eq 0 ]]; then
+        echo "  Still waiting for SSH... ($((ssh_attempts * 2))s)" >&2
+    fi
+done
+
+if [[ $ssh_attempts -lt $ssh_max ]]; then
+    info "SSH available on ${AZURE_HOST}"
+elif [[ "$SKIP_TAILSCALE" == "true" ]]; then
+    error "SSH not available after $((ssh_max * 2))s"
+    echo "  The VM may still be booting. Try connecting manually:" >&2
+    echo "    ssh ${SSH_USER}@${AZURE_HOST}" >&2
+    exit 1
+else
+    warn "SSH not available on public IP (UFW likely active from previous deploy)"
+    info "Falling back to Tailscale peer discovery..."
+
+    if ! command -v tailscale &>/dev/null; then
+        error "Tailscale is not installed on this machine and public SSH is blocked"
+        echo "  The VM has likely enabled UFW. Install Tailscale locally or" >&2
+        echo "  re-deploy with --skip-tailscale" >&2
+        exit 1
+    fi
+
+    # Extract expected Tailscale hostname from cloud-init config
+    ts_hostname=$(grep -oP '(?<=--hostname=)\S+' "$CLOUD_INIT" | head -1 || true)
+    if [[ -z "$ts_hostname" ]]; then
+        ts_hostname=$(grep "^hostname:" "$CLOUD_INIT" | awk '{print $2}')
+    fi
+    if [[ -z "$ts_hostname" ]]; then
+        ts_hostname="dokploy"
+    fi
+
+    step "Looking for Tailscale peer '$ts_hostname'..."
+    ts_peer_attempts=0
+    ts_peer_max=60  # 2 minutes
+
+    while true; do
+        ts_ip=$(tailscale status --json 2>/dev/null | jq -r \
+            ".Peer[] | select(.HostName == \"$ts_hostname\") | .TailscaleIPs[0] // empty" 2>/dev/null || true)
+
+        if [[ -n "$ts_ip" ]]; then
+            TAILSCALE_IP="$ts_ip"
+            SSH_TARGET="$ts_ip"
+            info "Tailscale peer found: $ts_hostname ($ts_ip)"
+            break
+        fi
+
+        ts_peer_attempts=$((ts_peer_attempts + 1))
+        if [[ $ts_peer_attempts -ge $ts_peer_max ]]; then
+            error "Tailscale peer '$ts_hostname' not found and public SSH is blocked"
+            echo "  Possible causes:" >&2
+            echo "    - TAILSCALE_AUTH_KEY is expired or already used (single-use)" >&2
+            echo "    - Cloud-init failed before reaching the Tailscale step" >&2
+            echo "    - The VM cannot reach the Tailscale coordination server" >&2
+            echo "" >&2
+            echo "  To diagnose, try accessing the VM serial console in Azure Portal" >&2
+            exit 1
+        fi
+        if [[ $((ts_peer_attempts % 15)) -eq 0 ]]; then
+            echo "  Still waiting for Tailscale peer... ($((ts_peer_attempts * 2))s)" >&2
+        fi
+
+        sleep 2
+    done
+
+    # Wait for SSH on Tailscale IP
+    step "Waiting for SSH via Tailscale ($TAILSCALE_IP)..."
+    ts_ssh_attempts=0
+    while ! run_ssh true 2>/dev/null; do
+        sleep 2
+        ts_ssh_attempts=$((ts_ssh_attempts + 1))
+        if [[ $ts_ssh_attempts -ge 30 ]]; then
+            error "SSH not available via Tailscale after 60s"
+            exit 1
+        fi
+    done
+    info "SSH available via Tailscale ($TAILSCALE_IP)"
+fi
 
 # ── Step 8: Poll Cloud-Init Status ──────────────────────────────────────────
 # Monitor cloud-init via public IP SSH. In Tailscale mode, also probe

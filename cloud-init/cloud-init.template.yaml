@@ -399,7 +399,7 @@ runcmd:
   - log "Installing Tailscale"
   - curl -fsSL https://tailscale.com/install.sh | sh
   - log "Tailscale installed, connecting to tailnet..."
-  - tailscale up --auth-key=${TAILSCALE_AUTH_KEY} --hostname=${VM_HOSTNAME} --accept-routes --timeout=30s
+  - tailscale up --auth-key=${TAILSCALE_AUTH_KEY} --hostname=${VM_HOSTNAME} --accept-routes --accept-dns=false --timeout=30s
   - 'log "Tailscale connected, IP: $(tailscale ip -4)"'
 
   # --- 7. UFW firewall (Tailscale-only for SSH + Dokploy) ---
